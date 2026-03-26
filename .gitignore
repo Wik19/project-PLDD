@@ -1,0 +1,14 @@
+# Environments
+venv/
+__pycache__/
+
+# Datasets and Images
+data/
+*.jpg
+*.png
+
+# Deep Learning Weights (Usually too large for GitHub)
+*.pth
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/

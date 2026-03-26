@@ -48,7 +48,7 @@ This will process the data in `data/`, train the model using a MobileNetV2 backb
 ### 2. Batch Inference
 To run batch inference on random test images from the PLD dataset:
 ```bash
-python src/interference.py
+python src/inference.py
 ```
 This script loads the trained model, performs predictions on random images, applies the classical CV post-processing (skeletonization and Hough Lines), and displays the results side-by-side using Matplotlib.
 
@@ -64,7 +64,7 @@ This script acts as a test bench for the line extraction logic, visualizing the 
 * **`src/`**: Project source code.
   * `dataset.py`: PyTorch `PowerlineDataset` loader. Dynamically pairs augmented training images with their ground-truth `.png` masks.
   * `train.py`: Main U-Net training loop, including validation and model checkpointing.
-  * `interference.py`: Full batch inference script running the neural network segmentation followed by the clean geometrical line extraction.
+  * `inference.py`: Full batch inference script running the neural network segmentation followed by the clean geometrical line extraction.
   * `line_extractor.py`: A sandbox script for the classical CV math behind turning binary segmentations into parameterized lines.
 * **`data/`**: The PLD Dataset (Mountain and Urban subset folders go here).
 * **`best_drone_wire_model.pth`**: Saved model weights (after training).

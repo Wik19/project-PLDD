@@ -49,6 +49,10 @@ def run_batch_inference(test_dir, model_path="best_drone_wire_model.pth", num_im
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Loading Model on {device.upper()}...")
 
+    if not os.path.exists(model_path):
+        print(f"Error: Model weights not found at '{model_path}'. Please train the model first.")
+        return
+
     # Load Model ONCE for the whole batch
     model = smp.Unet(encoder_name="mobilenet_v2", encoder_weights=None, in_channels=3, classes=1).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
@@ -68,10 +72,20 @@ def run_batch_inference(test_dir, model_path="best_drone_wire_model.pth", num_im
     cols = 3
     rows = (len(selected_images) + cols - 1) // cols
     fig, axes = plt.subplots(rows, cols, figsize=(18, 5 * rows))
-    axes = axes.flatten()
+    
+    # Handle the case where axes might not be an array if there's only 1 image
+    if num_images == 1:
+        axes = [axes]
+    else:
+        axes = axes.flatten()
+
+    # --- Output Directory ---
+    output_dir = "output"
+    os.makedirs(output_dir, exist_ok=True)
 
     for idx, img_path in enumerate(selected_images):
         filename = os.path.basename(img_path)
+        base_name = os.path.splitext(filename)[0]
         
         # Read and resize
         orig_img = cv2.imread(img_path)
@@ -100,6 +114,25 @@ def run_batch_inference(test_dir, model_path="best_drone_wire_model.pth", num_im
         for x1, y1, x2, y2 in clean_lines:
             cv2.line(output_image, (x1, y1), (x2, y2), (255, 0, 0), 4) 
 
+        # --- Intermediate Process Saving ---
+        # 1. Probability mask (scaled to 0-255)
+        cv2.imwrite(os.path.join(output_dir, f"{base_name}_01_prob_mask.png"), (prob_mask * 255).astype(np.uint8))
+        
+        # 2. Thinned mask (skeleton)
+        cv2.imwrite(os.path.join(output_dir, f"{base_name}_02_thinned.png"), thinned_mask)
+        
+        # 3. Raw lines on black background (for presentation)
+        bw_lines_img = np.zeros_like(thinned_mask)
+        if raw_lines is not None:
+            for line in raw_lines:
+                x1, y1, x2, y2 = line[0]
+                cv2.line(bw_lines_img, (x1, y1), (x2, y2), 255, 2)
+        cv2.imwrite(os.path.join(output_dir, f"{base_name}_03_raw_lines_bw.png"), bw_lines_img)
+        
+        # 4. Save Final individual output correctly colored (RGB back to BGR for cv2)
+        cv2.imwrite(os.path.join(output_dir, f"{base_name}_04_final.png"), cv2.cvtColor(output_image, cv2.COLOR_RGB2BGR))
+        # -----------------------------------
+
         # Plot in the grid
         axes[idx].imshow(output_image)
         axes[idx].set_title(f"{filename} | Wires: {len(clean_lines)}")
@@ -110,11 +143,16 @@ def run_batch_inference(test_dir, model_path="best_drone_wire_model.pth", num_im
         axes[i].axis('off')
 
     plt.tight_layout()
+    
+    save_path = os.path.join(output_dir, "batch_inference_results.png")
+    plt.savefig(save_path, bbox_inches='tight', dpi=300) # dpi=300 keeps the image high quality
+    print(f"Success! Grid image and intermediate files saved to: {output_dir}")
+
     plt.show()
 
 if __name__ == "__main__":
     # Point this to whichever folder you want to batch test!
     # By default, let's test 6 random images from the PLDM test set.
-    test_directory = "data/PLDM Dataset/test" 
+    test_directory = "data/Large_Datasets/PLDM/test" 
     
     run_batch_inference(test_directory, num_images=6)

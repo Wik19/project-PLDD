@@ -1,45 +1,77 @@
 import os
 import cv2
-import glob
 import torch
 import numpy as np
+import scipy.io
 from torch.utils.data import Dataset, DataLoader
 
 class PowerlineDataset(Dataset):
-    def __init__(self, root_dir, img_size=(480, 640)):
+    def __init__(self, root_dir, dataset_name='PLDU', split='train', img_size=(480, 640)):
         """
-        Dynamically crawls the PLD dataset structure to pair images and masks.
         Args:
-            root_dir (str): Path to the main 'data' folder containing PLDM and PLDU.
+            root_dir (str): Path to the main 'data/Large_Datasets' folder.
+            dataset_name (str): 'PLDU' or 'PLDM'.
+            split (str): 'train' or 'test'.
             img_size (tuple): The target size to resize images to (Height, Width).
         """
         self.root_dir = root_dir
+        self.dataset_name = dataset_name
+        self.split = split
         self.img_size = img_size
         self.pairs = []
         
-        print("Crawling dataset directories. This might take a few seconds...")
+        # Base folder for the specific dataset (PLDU or PLDM)
+        base_dir = os.path.join(self.root_dir, self.dataset_name)
         
-        # Recursively find ALL .jpg files inside the root directory
-        search_pattern = os.path.join(root_dir, '**', '*.jpg')
-        all_jpgs = glob.glob(search_pattern, recursive=True)
-        
-        for img_path in all_jpgs:
-            # We only want to train on the augmented training data, not the test set
-            if 'aug_data' in img_path:
+        if self.split == 'train':
+            lst_file = os.path.join(base_dir, f"{self.dataset_name}_{self.split}_pair.lst")
+            print(f"Loading training pairs from {lst_file}...")
+            if not os.path.exists(lst_file):
+                raise FileNotFoundError(f"List file not found: {lst_file}")
                 
-                # --- The Magic Path Swap ---
-                # 1. Replace 'aug_data' with 'aug_gt' in the directory string. 
-                # This perfectly handles 'aug_data_scale_0.5' -> 'aug_gt_scale_0.5'
-                mask_path = img_path.replace('aug_data', 'aug_gt')
+            with open(lst_file, 'r') as f:
+                lines = f.readlines()
                 
-                # 2. Swap the file extension from .jpg to .png
-                mask_path = os.path.splitext(mask_path)[0] + '.png'
+            for line in lines:
+                parts = line.strip().split()
+                if len(parts) == 2:
+                    img_subpath, mask_subpath = parts
+                    img_path = os.path.join(base_dir, img_subpath)
+                    mask_path = os.path.join(base_dir, mask_subpath)
+                    
+                    if os.path.exists(img_path) and os.path.exists(mask_path):
+                        self.pairs.append((img_path, mask_path))
+                    else:
+                        print(f"Warning: Missing file for {img_path} or {mask_path}")
+                        
+        elif self.split == 'test':
+            lst_file = os.path.join(base_dir, f"{self.dataset_name}_{self.split}.lst")
+            print(f"Loading test pairs from {lst_file}...")
+            if not os.path.exists(lst_file):
+                raise FileNotFoundError(f"List file not found: {lst_file}")
                 
-                # 3. Verify the mask actually exists on the hard drive before adding
-                if os.path.exists(mask_path):
+            with open(lst_file, 'r') as f:
+                lines = f.readlines()
+                
+            for line in lines:
+                img_subpath = line.strip()
+                if not img_subpath:
+                    continue
+                
+                img_path = os.path.join(base_dir, img_subpath)
+                
+                # Replace 'test/' with 'test_gt/' and '.jpg' with '.mat'
+                mask_subpath = img_subpath.replace('test/', 'test_gt/')
+                mask_subpath = os.path.splitext(mask_subpath)[0] + '.mat'
+                mask_path = os.path.join(base_dir, mask_subpath)
+                
+                if os.path.exists(img_path) and os.path.exists(mask_path):
                     self.pairs.append((img_path, mask_path))
                 else:
-                    print(f"Warning: Missing mask for {img_path}")
+                    print(f"Warning: Missing file for {img_path} or {mask_path}")
+                    
+        else:
+            raise ValueError(f"Invalid split: {self.split}")
 
         print(f"Successfully paired {len(self.pairs)} image-mask combinations.")
 
@@ -49,23 +81,51 @@ class PowerlineDataset(Dataset):
     def __getitem__(self, idx):
         img_path, mask_path = self.pairs[idx]
         
-        # 1. Read images
+        # 1. Read image
         image = cv2.imread(img_path)
+        if image is None:
+            raise RuntimeError(f"Failed to read image: {img_path}")
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
         
-        # 2. Resize
+        # 2. Read mask depending on file extension
+        if mask_path.endswith('.mat'):
+            mat = scipy.io.loadmat(mask_path)
+            
+            if 'groundTruth' in mat:
+                val = mat['groundTruth']
+                try:
+                    # Handle common edge-detection nested struct format
+                    mask = val[0, 0]['Boundaries'][0, 0]
+                except (IndexError, ValueError, KeyError, TypeError):
+                    mask = val
+            elif 'GT' in mat:
+                mask = mat['GT']
+            else:
+                keys = [k for k in mat.keys() if not k.startswith('__')]
+                mask = mat[keys[0]] if keys else np.zeros((self.img_size[0], self.img_size[1]), dtype=np.uint8)
+                
+            mask = np.array(mask)
+            if mask.max() <= 1.0:
+                mask = (mask * 255).astype(np.uint8)
+            else:
+                mask = mask.astype(np.uint8)
+        else:
+            mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+            if mask is None:
+                raise RuntimeError(f"Failed to read mask: {mask_path}")
+            
+        # 3. Resize
         image = cv2.resize(image, (self.img_size[1], self.img_size[0]))
         mask = cv2.resize(mask, (self.img_size[1], self.img_size[0]), interpolation=cv2.INTER_NEAREST)
         
-        # 3. Normalize to 0.0 - 1.0 for the Neural Network
+        # 4. Normalize to 0.0 - 1.0 for the Neural Network
         image = image.astype(np.float32) / 255.0
         
         # Ensure mask is strictly binary
         _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
         mask = mask.astype(np.float32) / 255.0
         
-        # 4. Convert to PyTorch Tensors (Channels, Height, Width)
+        # 5. Convert to PyTorch Tensors (Channels, Height, Width)
         image_tensor = torch.from_numpy(image).permute(2, 0, 1)
         mask_tensor = torch.from_numpy(mask).unsqueeze(0) 
         
@@ -73,11 +133,9 @@ class PowerlineDataset(Dataset):
 
 # --- QUICK TEST SCRIPT ---
 if __name__ == "__main__":
-    # Point directly to the root 'data' folder
-    # Assuming you run this from the 'drone_wire_detection' root directory
-    data_folder = "data" 
+    data_folder = "data/Large_Datasets" 
     
-    dataset = PowerlineDataset(root_dir=data_folder, img_size=(480, 640))
+    dataset = PowerlineDataset(root_dir=data_folder, dataset_name='PLDU', split='train', img_size=(480, 640))
     
     if len(dataset) > 0:
         img, mask = dataset[0]

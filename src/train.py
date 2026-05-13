@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader
 import segmentation_models_pytorch as smp
 from tqdm import tqdm
 import os
@@ -11,22 +11,21 @@ from dataset import PowerlineDataset
 
 # --- Hyperparameters ---
 BATCH_SIZE = 4       # Start with 4. If your GPU handles it, you can bump to 8.
-EPOCHS = 5           # We'll start with 5 epochs just to prove the pipeline works.
+EPOCHS = 30          # Increased for larger dataset
 LEARNING_RATE = 1e-3
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-DATA_ROOT = "data"   # Pointing to your root data folder
+DATA_ROOT = "data/Large_Datasets"   # Pointing to your new large data folder
 MODEL_SAVE_PATH = "best_drone_wire_model.pth"
 
 def main():
     print(f"Initializing Training Pipeline on {DEVICE.upper()}...")
 
-    # 1. Load the Dataset
-    full_dataset = PowerlineDataset(root_dir=DATA_ROOT, img_size=(480, 640))
+    # 1. Load the Training and Validation Datasets directly
+    train_dataset = PowerlineDataset(root_dir=DATA_ROOT, dataset_name='PLDM', split='train', img_size=(480, 640))
+    val_dataset = PowerlineDataset(root_dir=DATA_ROOT, dataset_name='PLDM', split='test', img_size=(480, 640))
     
-    # 2. Split into Training (90%) and Validation (10%)
-    train_size = int(0.9 * len(full_dataset))
-    val_size = len(full_dataset) - train_size
-    train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
+    train_size = len(train_dataset)
+    val_size = len(val_dataset)
     
     print(f"Training on {train_size} images, Validating on {val_size} images.")
 
@@ -47,6 +46,9 @@ def main():
     # BCEWithLogitsLoss is the mathematical standard for Binary Classification
     criterion = nn.BCEWithLogitsLoss() 
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    
+    # Add a learning rate scheduler to help converge on the larger dataset
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
 
     # 6. The Training Loop
     best_val_loss = float('inf')
@@ -95,6 +97,9 @@ def main():
 
         avg_val_loss = val_loss / len(val_loader)
         print(f"Epoch {epoch+1} Summary: Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+
+        # Step the learning rate scheduler based on validation loss
+        scheduler.step(avg_val_loss)
 
         # -- SAVE THE BEST MODEL --
         if avg_val_loss < best_val_loss:

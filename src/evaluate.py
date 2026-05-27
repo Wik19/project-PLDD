@@ -103,12 +103,18 @@ def evaluate_model(model_path="best_drone_wire_model.pth", data_root="data/Large
     os.makedirs(output_dir, exist_ok=True)
     
     cm = np.array([[total_tn, total_fp], [total_fn, total_tp]])
+    cm_percent = cm / np.sum(cm) * 100
+    
+    annot_data = np.empty_like(cm_percent, dtype=object)
+    for i in range(2):
+        for j in range(2):
+            annot_data[i, j] = f"{cm_percent[i, j]:.3f}%"
     
     plt.figure(figsize=(8, 6))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+    sns.heatmap(cm_percent, annot=annot_data, fmt='', cmap='Blues', 
                 xticklabels=['Predicted Background', 'Predicted Wire'],
                 yticklabels=['Actual Background', 'Actual Wire'])
-    plt.title(f'Pixel-Level Confusion Matrix ({dataset_name})')
+    plt.title(f'Pixel-Level Confusion Matrix ({dataset_name}) - Percentages')
     
     cm_path = os.path.join(output_dir, f"confusion_matrix_{dataset_name}.png")
     plt.savefig(cm_path, bbox_inches='tight', dpi=300)

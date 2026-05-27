@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, ConcatDataset
 import segmentation_models_pytorch as smp
 from tqdm import tqdm
 import os
@@ -10,8 +10,8 @@ import os
 from dataset import PowerlineDataset 
 
 # --- Hyperparameters ---
-BATCH_SIZE = 4       # Start with 4. If your GPU handles it, you can bump to 8.
-EPOCHS = 30          # Increased for larger dataset
+BATCH_SIZE = 8       # Start with 4. If your GPU handles it, you can bump to 8.
+EPOCHS = 100         # Increased for overnight training
 LEARNING_RATE = 1e-3
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DATA_ROOT = "data/Large_Datasets"   # Pointing to your new large data folder
@@ -21,17 +21,22 @@ def main():
     print(f"Initializing Training Pipeline on {DEVICE.upper()}...")
 
     # 1. Load the Training and Validation Datasets directly
-    train_dataset = PowerlineDataset(root_dir=DATA_ROOT, dataset_name='PLDM', split='train', img_size=(480, 640))
-    val_dataset = PowerlineDataset(root_dir=DATA_ROOT, dataset_name='PLDM', split='test', img_size=(480, 640))
+    train_pldm = PowerlineDataset(root_dir=DATA_ROOT, dataset_name='PLDM', split='train', img_size=(480, 640))
+    train_pldu = PowerlineDataset(root_dir=DATA_ROOT, dataset_name='PLDU', split='train', img_size=(480, 640))
+    val_pldm = PowerlineDataset(root_dir=DATA_ROOT, dataset_name='PLDM', split='test', img_size=(480, 640))
+    val_pldu = PowerlineDataset(root_dir=DATA_ROOT, dataset_name='PLDU', split='test', img_size=(480, 640))
     
-    train_size = len(train_dataset)
-    val_size = len(val_dataset)
+    full_train_dataset = ConcatDataset([train_pldm, train_pldu])
+    full_val_dataset = ConcatDataset([val_pldm, val_pldu])
+    
+    train_size = len(full_train_dataset)
+    val_size = len(full_val_dataset)
     
     print(f"Training on {train_size} images, Validating on {val_size} images.")
 
     # 3. Create DataLoaders (These feed the GPU in batches)
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=2)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=2)
+    train_loader = DataLoader(full_train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
+    val_loader = DataLoader(full_val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
 
     # 4. Initialize the U-Net Model
     # We use MobileNetV2 as the backbone because it is incredibly fast on edge devices.
@@ -43,8 +48,8 @@ def main():
     ).to(DEVICE)
 
     # 5. Define Loss Function and Optimizer
-    # BCEWithLogitsLoss is the mathematical standard for Binary Classification
-    criterion = nn.BCEWithLogitsLoss() 
+    criterion_bce = nn.BCEWithLogitsLoss() 
+    criterion_dice = smp.losses.DiceLoss(smp.losses.BINARY_MODE)
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
     
     # Add a learning rate scheduler to help converge on the larger dataset
@@ -52,6 +57,8 @@ def main():
 
     # 6. The Training Loop
     best_val_loss = float('inf')
+    epochs_without_improvement = 0
+    early_stopping_patience = 7
 
     for epoch in range(EPOCHS):
         print(f"\n--- Epoch {epoch+1}/{EPOCHS} ---")
@@ -67,7 +74,7 @@ def main():
 
             # Forward Pass
             predictions = model(images)
-            loss = criterion(predictions, masks)
+            loss = criterion_bce(predictions, masks) + criterion_dice(predictions, masks)
 
             # Backward Pass (Learn from mistakes)
             optimizer.zero_grad()
@@ -90,7 +97,7 @@ def main():
                 images, masks = images.to(DEVICE), masks.to(DEVICE)
                 
                 predictions = model(images)
-                loss = criterion(predictions, masks)
+                loss = criterion_bce(predictions, masks) + criterion_dice(predictions, masks)
                 
                 val_loss += loss.item()
                 val_loop.set_postfix(loss=loss.item())
@@ -101,11 +108,19 @@ def main():
         # Step the learning rate scheduler based on validation loss
         scheduler.step(avg_val_loss)
 
-        # -- SAVE THE BEST MODEL --
+        # -- SAVE THE BEST MODEL AND EARLY STOPPING --
         if avg_val_loss < best_val_loss:
             print(f"Validation loss improved from {best_val_loss:.4f} to {avg_val_loss:.4f}. Saving model!")
             best_val_loss = avg_val_loss
+            epochs_without_improvement = 0
             torch.save(model.state_dict(), MODEL_SAVE_PATH)
+        else:
+            epochs_without_improvement += 1
+            print(f"No improvement in validation loss for {epochs_without_improvement} epochs.")
+            
+        if epochs_without_improvement >= early_stopping_patience:
+            print(f"\nEarly stopping triggered! Validation loss hasn't improved in {early_stopping_patience} epochs.")
+            break
 
     print("\nTraining Complete! Best model saved to:", MODEL_SAVE_PATH)
 

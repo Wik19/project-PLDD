@@ -4,6 +4,9 @@ __pycache__/
 
 # Datasets and Images
 data/
+evaluation_results/
+datasets_large/
+output/
 *.jpg
 *.png
 

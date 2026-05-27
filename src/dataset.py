@@ -5,6 +5,7 @@ import numpy as np
 import scipy.io
 from torch.utils.data import Dataset, DataLoader
 
+
 class PowerlineDataset(Dataset):
     def __init__(self, root_dir, dataset_name='PLDU', split='train', img_size=(480, 640)):
         """
